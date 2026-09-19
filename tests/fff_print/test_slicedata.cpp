@@ -61,7 +61,7 @@ TEST_CASE("Sliced-data preserves XYZ and arc fits", "[Print][slicedata]")
         {{"version", 1}, {"points_xyz", json::array()}, {"arc_fitting", json::array()}}
     };
     json linear = xyz;
-    linear["arc_fitting"] = {straight};
+    linear["arc_fitting"] = json::array({straight});
     cases.push_back(linear);
     for (int direction : {1, 2}) {
         json fitted = xyz;
@@ -72,8 +72,8 @@ TEST_CASE("Sliced-data preserves XYZ and arc fits", "[Print][slicedata]")
             arc_data["polar_end_theta"] = -1.5707963267948966;
             fitted["points_xyz"][1] = {0, -1000000, -19};
         }
-        fitted["arc_fitting"] = {{{"start_index", 0}, {"end_index", 1},
-            {"path_type", direction == 2 ? 2 : 3}, {"arc_data", arc_data}}};
+        fitted["arc_fitting"] = json::array({{{"start_index", 0}, {"end_index", 1},
+            {"path_type", direction == 2 ? 2 : 3}, {"arc_data", arc_data}}});
         cases.push_back(fitted);
     }
     json legacy = {{"points", {1000000, 0, 0, 1000000}},
