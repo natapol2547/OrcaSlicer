@@ -6213,6 +6213,19 @@ int CLI::run(int argc, char **argv)
                                     BOOST_LOG_TRIVIAL(info) << "process finished, will export gcode temporarily to " << outfile << std::endl;
                                     temp_time = (long long)Slic3r::Utils::get_current_time_utc();
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
+                                    // Isolated research telemetry; normal CLI output is unchanged.
+                                    if (::getenv("MS_NATIVE_CACHE_STATS") && gcode_result) {
+                                        const auto& stats = print_fff->print_statistics();
+                                        json native_stats = {
+                                            {"time_s", gcode_result->print_statistics.modes[
+                                                static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time},
+                                            {"volume_mm3", stats.total_extruded_volume},
+                                            {"length_mm", stats.total_used_filament},
+                                            {"mass_g", stats.total_weight},
+                                            {"volumes_per_extruder", gcode_result->print_statistics.total_volumes_per_extruder}
+                                        };
+                                        boost::nowide::cout << "MS_NATIVE_STATS=" << native_stats.dump() << std::endl;
+                                    }
                                     time_using_cache = time_using_cache + ((long long)Slic3r::Utils::get_current_time_utc() - temp_time);
                                     BOOST_LOG_TRIVIAL(info) << "export_gcode finished: time_using_cache update to " << time_using_cache << " secs.";
                                     if (gcode_result && gcode_result->gcode_check_result.error_code) {
