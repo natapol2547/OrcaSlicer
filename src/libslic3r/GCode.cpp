@@ -2027,9 +2027,21 @@ WipeTowerType GCode::wipe_tower_type()
     return WipeTowerType::Type2;
 }
 
+// Research-only startup option. Commands still pass through the native
+// processor; only file output and its final rewrite are omitted.
+static bool native_statistics_only()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("MS_NATIVE_STATS_ONLY");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    return enabled;
+}
+
 void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
     PROFILE_CLEAR();
+    const bool statistics_only = native_statistics_only();
 
     // BBS
     m_curr_print = print;
@@ -2039,7 +2051,7 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
     CNumericLocalesSetter locales_setter;
 
     // Does the file exist? If so, we hope that it is still valid.
-    if (print->is_step_done(psGCodeExport) && boost::filesystem::exists(boost::filesystem::path(path)))
+    if (!statistics_only && print->is_step_done(psGCodeExport) && boost::filesystem::exists(boost::filesystem::path(path)))
         return;
 
     BOOST_LOG_TRIVIAL(info) << boost::format("Will export G-code to %1% soon")%path;
@@ -2067,7 +2079,8 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
     BOOST_LOG_TRIVIAL(info) << "Exporting G-code..." << log_memory_info();
 
     // Remove the old g-code if it exists.
-    boost::nowide::remove(path);
+    if (!statistics_only)
+        boost::nowide::remove(path);
 
     fs::path file_path(path);
     fs::path folder = file_path.parent_path();
@@ -2081,7 +2094,14 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
 
     m_processor.initialize(path_tmp);
     m_processor.set_print(print);
-    GCodeOutputStream file(boost::nowide::fopen(path_tmp.c_str(), "wb"), m_processor);
+    // Keep the stream's FILE lifetime/error handling intact. Statistics mode
+    // never writes to this null device and never creates a G-code file.
+#ifdef _WIN32
+    const char* null_device = "NUL";
+#else
+    const char* null_device = "/dev/null";
+#endif
+    GCodeOutputStream file(boost::nowide::fopen(statistics_only ? null_device : path_tmp.c_str(), "wb"), m_processor);
     if (! file.is_open()) {
         BOOST_LOG_TRIVIAL(error) << std::string("G-code export to ") + path + " failed.\nCannot open the file for writing.\n" << std::endl;
         if (!fs::exists(folder)) {
@@ -2096,14 +2116,16 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
         file.flush();
         if (file.is_error()) {
             file.close();
-            boost::nowide::remove(path_tmp.c_str());
+            if (!statistics_only)
+                boost::nowide::remove(path_tmp.c_str());
             throw Slic3r::RuntimeError(std::string("G-code export to ") + path + " failed\nIs the disk full?\n");
         }
     } catch (std::exception & /* ex */) {
         // Rethrow on any exception. std::runtime_exception and CanceledException are expected to be thrown.
         // Close and remove the file.
         file.close();
-        boost::nowide::remove(path_tmp.c_str());
+        if (!statistics_only)
+            boost::nowide::remove(path_tmp.c_str());
         throw;
     }
     file.close();
@@ -2171,25 +2193,25 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
                                                  extruder_unprintable_polys, m_print->get_extruder_printable_height(),  m_print->get_filament_maps(),
                                                  m_print->get_physical_unprintable_filaments(m_print->get_slice_used_filaments(false)));
 
-    m_processor.finalize(true);
+    m_processor.finalize(!statistics_only);
 //    DoExport::update_print_estimated_times_stats(m_processor, print->m_print_statistics);
     DoExport::update_print_estimated_stats(m_processor, m_writer.extruders(), print->m_print_statistics, print->config());
     if (result != nullptr) {
         *result = std::move(m_processor.extract_result());
         // set the filename to the correct value
-        result->filename = path;
+        result->filename = statistics_only ? std::string() : path;
     }
 
     //BBS: add some log for error output
     BOOST_LOG_TRIVIAL(debug) << boost::format("Finished processing gcode to %1% ") % path_tmp;
 
-    std::error_code ret = rename_file(path_tmp, path);
+    std::error_code ret = statistics_only ? std::error_code() : rename_file(path_tmp, path);
     if (ret) {
         throw Slic3r::RuntimeError(
             std::string("Failed to rename the output G-code file from ") + path_tmp + " to " + path + '\n' + "error code " + ret.message() + '\n' +
             "Is " + path_tmp + " locked?" + '\n');
     }
-    else {
+    else if (!statistics_only) {
         BOOST_LOG_TRIVIAL(info) << boost::format("rename_file from %1% to %2% successfully")% path_tmp % path;
     }
 
@@ -6257,7 +6279,8 @@ void GCode::GCodeOutputStream::write(const char *what)
     if (what != nullptr) {
         const char* gcode = what;
         // writes string to file
-        fwrite(gcode, 1, ::strlen(gcode), this->f);
+        if (!native_statistics_only())
+            fwrite(gcode, 1, ::strlen(gcode), this->f);
         //FIXME don't allocate a string, maybe process a batch of lines?
         m_processor.process_buffer(std::string(gcode));
     }
