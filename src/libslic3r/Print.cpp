@@ -4060,11 +4060,9 @@ static void to_json(json& j, const ArcSegment& arc_seg) {
 }
 
 
-static void to_json(json& j, const Polyline& poly_line) {
-    json points_json = json::array(), fittings_json = json::array();
-    points_json = poly_line.points;
-
-    j[JSON_POINTS] = std::move(points_json);
+template<class PolylineType>
+static void polyline_fitting_to_json(json& j, const PolylineType& poly_line) {
+    json fittings_json = json::array();
     for (const PathFittingData& path_fitting : poly_line.fitting_result)
     {
         json fitting_json;
@@ -4077,6 +4075,24 @@ static void to_json(json& j, const Polyline& poly_line) {
         fittings_json.push_back(std::move(fitting_json));
     }
     j[JSON_ARC_FITTING] = fittings_json;
+}
+
+static void to_json(json& j, const Polyline& poly_line) {
+    json points = json::array();
+    to_json(points, poly_line.points);
+    j[JSON_POINTS] = std::move(points);
+    polyline_fitting_to_json(j, poly_line);
+}
+
+static void to_json(json& j, const Polyline3& poly_line) {
+    // A distinct versioned field prevents old readers from interpreting XYZ as
+    // XY. The former implicit array conversion also discarded all arc fits.
+    j["version"] = 1;
+    json points = json::array();
+    for (const Point3& p : poly_line.points)
+        points.push_back({p.x(), p.y(), p.z()});
+    j["points_xyz"] = std::move(points);
+    polyline_fitting_to_json(j, poly_line);
 }
 
 static void to_json(json& j, const ExtrusionPath& extrusion_path) {
@@ -4334,13 +4350,16 @@ static void from_json(const json& j, ArcSegment& arc_seg) {
 }
 
 
-static void from_json(const json& j, Polyline& poly_line) {
-    poly_line.points = j[JSON_POINTS];
-
-    int arc_fitting_count = j[JSON_ARC_FITTING].size();
+template<class PolylineType>
+static void polyline_fitting_from_json(const json& j, PolylineType& poly_line) {
+    poly_line.fitting_result.clear();
+    const json& fittings = j.at(JSON_ARC_FITTING);
+    if (!fittings.is_array())
+        throw std::runtime_error("Invalid sliced-data arc-fitting metadata");
+    int arc_fitting_count = fittings.size();
     for (int arc_fitting_index = 0; arc_fitting_index < arc_fitting_count; arc_fitting_index++)
     {
-        const json& fitting_json = j[JSON_ARC_FITTING][arc_fitting_index];
+        const json& fitting_json = fittings[arc_fitting_index];
         PathFittingData path_fitting;
         path_fitting.start_point_index = fitting_json[JSON_ARC_START_INDEX];
         path_fitting.end_point_index = fitting_json[JSON_ARC_END_INDEX];
@@ -4355,9 +4374,39 @@ static void from_json(const json& j, Polyline& poly_line) {
     return;
 }
 
+static void from_json(const json& j, Polyline& poly_line) {
+    poly_line.points = j[JSON_POINTS];
+    polyline_fitting_from_json(j, poly_line);
+}
+
+static void from_json(const json& j, Polyline3& poly_line) {
+    if (!j.is_object())
+        throw std::runtime_error("Sliced-data path lacks arc-fitting metadata; reslice required");
+    if (!j.contains("version")) {
+        // Legacy complete XY records remain readable. Polyline3's converting
+        // constructor copies points only, so move fitting metadata explicitly.
+        Polyline legacy = j;
+        poly_line = Polyline3(legacy);
+        poly_line.fitting_result = std::move(legacy.fitting_result);
+        return;
+    }
+    if (j.at("version") != 1)
+        throw std::runtime_error("Unsupported sliced-data path version");
+    const json& points = j.at("points_xyz");
+    if (!points.is_array())
+        throw std::runtime_error("Invalid sliced-data XYZ points");
+    poly_line.points.clear();
+    for (const json& p : points) {
+        if (!p.is_array() || p.size() != 3 || !p[0].is_number_integer() ||
+            !p[1].is_number_integer() || !p[2].is_number_integer())
+            throw std::runtime_error("Invalid sliced-data XYZ point");
+        poly_line.points.emplace_back(p[0].get<coord_t>(), p[1].get<coord_t>(), p[2].get<coord_t>());
+    }
+    polyline_fitting_from_json(j, poly_line);
+}
+
 static void from_json(const json& j, ExtrusionPath& extrusion_path) {
-    Polyline temp_polyline = j[JSON_EXTRUSION_POLYLINE];
-    extrusion_path.polyline = Polyline3(temp_polyline);
+    from_json(j[JSON_EXTRUSION_POLYLINE], extrusion_path.polyline);
     extrusion_path.mm3_per_mm             =    j[JSON_EXTRUSION_MM3_PER_MM];
     extrusion_path.width                  =    j[JSON_EXTRUSION_WIDTH];
     extrusion_path.height                 =    j[JSON_EXTRUSION_HEIGHT];
