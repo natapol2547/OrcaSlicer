@@ -4375,7 +4375,7 @@ static void polyline_fitting_from_json(const json& j, PolylineType& poly_line) {
 }
 
 static void from_json(const json& j, Polyline& poly_line) {
-    poly_line.points = j[JSON_POINTS];
+    poly_line.points = j.at(JSON_POINTS);
     polyline_fitting_from_json(j, poly_line);
 }
 
@@ -4390,7 +4390,7 @@ static void from_json(const json& j, Polyline3& poly_line) {
         poly_line.fitting_result = std::move(legacy.fitting_result);
         return;
     }
-    if (j.at("version") != 1)
+    if (!j.at("version").is_number_integer() || j.at("version") != 1)
         throw std::runtime_error("Unsupported sliced-data path version");
     const json& points = j.at("points_xyz");
     if (!points.is_array())
