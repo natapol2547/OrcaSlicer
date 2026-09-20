@@ -6267,6 +6267,10 @@ int CLI::run(int argc, char **argv)
                                     BOOST_LOG_TRIVIAL(info) << "process finished, will export gcode temporarily to " << outfile << std::endl;
                                     temp_time = (long long)Slic3r::Utils::get_current_time_utc();
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
+                                    const char* worker_flag = ::getenv("MS_NATIVE_WORKER");
+                                    const bool native_worker = worker_flag && std::string(worker_flag) == "1";
+                                    if (native_worker && (!gcode_result || gcode_result->gcode_check_result.error_code))
+                                        throw Slic3r::RuntimeError("Native worker initial movement path is invalid");
                                     // Isolated research telemetry; normal CLI output is unchanged.
                                     auto native_statistics = [&]() {
                                         const auto& stats = print_fff->print_statistics();
@@ -6290,7 +6294,8 @@ int CLI::run(int argc, char **argv)
                                         if (!output)
                                             throw Slic3r::RuntimeError("Cannot write native model state");
                                     }
-                                    if (const char* reapply_path = ::getenv("MS_NATIVE_REAPPLY_CONFIG")) {
+                                    const char* reapply_path = ::getenv("MS_NATIVE_REAPPLY_CONFIG");
+                                    if (reapply_path || native_worker) {
                                         // Research A->B->A lifecycle probe. Native invalidation owns
                                         // stage reuse; never import serialized paths or mark them done.
                                         const char* stats_only = ::getenv("MS_NATIVE_STATS_ONLY");
@@ -6299,15 +6304,18 @@ int CLI::run(int argc, char **argv)
                                         const DynamicPrintConfig original_config = print_fff->full_print_config();
                                         const Model original_model(print_fff->model());
                                         const char* model_path = ::getenv("MS_NATIVE_REAPPLY_MODEL");
-                                        const json original_state = model_path ? native_model_state() : json();
-                                        for (int phase = 0; phase < 2; ++phase) {
+                                        const json original_state = model_path || native_worker ? native_model_state() : json();
+                                        if (native_worker && reapply_path)
+                                            throw Slic3r::RuntimeError("Native worker and cycle modes are exclusive");
+                                        auto apply_request = [&](const char* config_path, const char* placement_path,
+                                                                 bool restore, bool require_changed) {
                                             const auto begin = std::chrono::steady_clock::now();
                                             const std::clock_t cpu_begin = std::clock();
                                             DynamicPrintConfig next_config = original_config;
-                                            if (phase == 0) {
+                                            if (!restore) {
                                                 // ConfigBase::load deliberately ignores INI files.
-                                                next_config.load_from_ini(reapply_path, ForwardCompatibilitySubstitutionRule::Disable);
-                                                if (next_config == original_config)
+                                                next_config.load_from_ini(config_path, ForwardCompatibilitySubstitutionRule::Disable);
+                                                if (require_changed && next_config == original_config)
                                                     throw Slic3r::RuntimeError("Native reapply probe did not load a changed configuration");
                                             }
                                             auto settings_identity = [](const DynamicPrintConfig& config) {
@@ -6318,15 +6326,15 @@ int CLI::run(int argc, char **argv)
                                             };
                                             const json requested_settings = settings_identity(next_config);
                                             json requested_config;
-                                            if (model_path)
+                                            if (placement_path)
                                                 for (const auto& key : next_config.keys())
                                                     requested_config[key] = next_config.opt_serialize(key);
                                             Model next_model(original_model);
                                             json requested_model;
-                                            if (model_path) {
+                                            if (placement_path) {
                                                 requested_model = original_state;
-                                                if (phase == 0) {
-                                                    boost::nowide::ifstream input(model_path);
+                                                if (!restore) {
+                                                    boost::nowide::ifstream input(placement_path);
                                                     input >> requested_model;
                                                 }
                                                 for (const char* key : {"vertices", "triangles"})
@@ -6351,7 +6359,7 @@ int CLI::run(int argc, char **argv)
                                                 print_fff->set_plate_origin(Vec3d(origin.at(0).get<double>(), origin.at(1).get<double>(), origin.at(2).get<double>()));
                                             }
                                             print_fff->apply(next_model, std::move(next_config));
-                                            if (model_path) {
+                                            if (placement_path) {
                                                 for (auto item = requested_config.begin(); item != requested_config.end(); ++item)
                                                     if (print_fff->full_print_config().opt_serialize(item.key()) != item.value().get<std::string>())
                                                         throw Slic3r::RuntimeError("Native reapply changed requested config key: " + item.key());
@@ -6381,14 +6389,36 @@ int CLI::run(int argc, char **argv)
                                             if (gcode_result->gcode_check_result.error_code)
                                                 throw Slic3r::RuntimeError("Native reapply probe produced an invalid movement path");
                                             json observed = native_statistics();
-                                            observed["phase"] = phase == 0 ? "target" : "return";
                                             observed["retained"] = std::move(retained);
                                             observed["requested_settings"] = requested_settings;
                                             observed["applied_settings"] = applied_settings;
-                                            observed["placement_verified"] = model_path != nullptr;
+                                            observed["placement_verified"] = placement_path != nullptr;
                                             observed["wall_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
                                             observed["cpu_s"] = double(std::clock() - cpu_begin) / CLOCKS_PER_SEC;
-                                            boost::nowide::cout << "MS_NATIVE_REAPPLY=" << observed.dump() << std::endl;
+                                            return observed;
+                                        };
+                                        if (native_worker) {
+                                            boost::nowide::cout << "MS_NATIVE_READY={\"protocol\":1}" << std::endl;
+                                            std::string line;
+                                            while (std::getline(boost::nowide::cin, line)) {
+                                                if (line.size() > 65536)
+                                                    throw Slic3r::RuntimeError("Native worker request exceeds the protocol limit");
+                                                const json request = json::parse(line);
+                                                const std::string id = request.at("id").get<std::string>();
+                                                const std::string config = request.at("config").get<std::string>();
+                                                const std::string placement = request.at("model").get<std::string>();
+                                                if (id.empty() || id.size() > 128 || config.empty() || placement.empty())
+                                                    throw Slic3r::RuntimeError("Native worker request has an invalid identity or path");
+                                                json observed = apply_request(config.c_str(), placement.c_str(), false, false);
+                                                observed["id"] = id;
+                                                boost::nowide::cout << "MS_NATIVE_RESULT=" << observed.dump() << std::endl;
+                                            }
+                                        } else {
+                                            for (int phase = 0; phase < 2; ++phase) {
+                                                json observed = apply_request(reapply_path, model_path, phase == 1, phase == 0);
+                                                observed["phase"] = phase == 0 ? "target" : "return";
+                                                boost::nowide::cout << "MS_NATIVE_REAPPLY=" << observed.dump() << std::endl;
+                                            }
                                         }
                                     }
                                     time_using_cache = time_using_cache + ((long long)Slic3r::Utils::get_current_time_utc() - temp_time);
