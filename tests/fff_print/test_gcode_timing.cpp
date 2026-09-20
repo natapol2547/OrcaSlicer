@@ -126,14 +126,19 @@ TEST_CASE("Speed-preview insertion is optional without changing native quantitie
     REQUIRE(filament_change_delay(a) == filament_change_delay(b));
     size_t original_index = 0;
     for (const auto& move : a.moves) {
-        if (move.internal_only)
-            continue;
         REQUIRE(original_index < b.moves.size());
-        const auto& original = b.moves[original_index++];
-        REQUIRE_FALSE(original.internal_only);
-        REQUIRE(move.type == original.type);
-        REQUIRE(move.position == original.position);
-        REQUIRE(move.time == original.time);
+        const auto& original = b.moves[original_index];
+        if (move.type == original.type && move.position == original.position &&
+            move.gcode_id == original.gcode_id && move.internal_only == original.internal_only) {
+            REQUIRE(move.time == original.time);
+            ++original_index;
+        } else {
+            // Arc interpolation vertices also use internal_only and must survive.
+            // Only added speed-preview vertices may disappear, with zero timing.
+            REQUIRE(move.internal_only);
+            REQUIRE(move.time[NORMAL] == 0.0f);
+            REQUIRE(move.time[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Stealth)] == 0.0f);
+        }
     }
     REQUIRE(original_index == b.moves.size());
 
