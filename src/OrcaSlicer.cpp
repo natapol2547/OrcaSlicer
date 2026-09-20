@@ -6244,9 +6244,23 @@ int CLI::run(int argc, char **argv)
                                             const auto begin = std::chrono::steady_clock::now();
                                             const std::clock_t cpu_begin = std::clock();
                                             DynamicPrintConfig next_config = original_config;
-                                            if (phase == 0)
-                                                next_config.load(reapply_path, ForwardCompatibilitySubstitutionRule::Disable);
+                                            if (phase == 0) {
+                                                // ConfigBase::load deliberately ignores INI files.
+                                                next_config.load_from_ini(reapply_path, ForwardCompatibilitySubstitutionRule::Disable);
+                                                if (next_config == original_config)
+                                                    throw Slic3r::RuntimeError("Native reapply probe did not load a changed configuration");
+                                            }
+                                            auto settings_identity = [](const DynamicPrintConfig& config) {
+                                                json identity;
+                                                for (const char* key : {"layer_height", "default_acceleration", "elefant_foot_compensation", "ironing_speed", "filament_type"})
+                                                    identity[key] = config.opt_serialize(key);
+                                                return identity;
+                                            };
+                                            const json requested_settings = settings_identity(next_config);
                                             print_fff->apply(original_model, std::move(next_config));
+                                            const json applied_settings = settings_identity(print_fff->full_print_config());
+                                            if (applied_settings != requested_settings)
+                                                throw Slic3r::RuntimeError("Native reapply probe did not apply the requested settings");
                                             json retained = {
                                                 {"slice", print_fff->is_step_done(posSlice)},
                                                 {"perimeters", print_fff->is_step_done(posPerimeters)},
@@ -6263,6 +6277,8 @@ int CLI::run(int argc, char **argv)
                                             json observed = native_statistics();
                                             observed["phase"] = phase == 0 ? "target" : "return";
                                             observed["retained"] = std::move(retained);
+                                            observed["requested_settings"] = requested_settings;
+                                            observed["applied_settings"] = applied_settings;
                                             observed["wall_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
                                             observed["cpu_s"] = double(std::clock() - cpu_begin) / CLOCKS_PER_SEC;
                                             boost::nowide::cout << "MS_NATIVE_REAPPLY=" << observed.dump() << std::endl;
