@@ -322,6 +322,8 @@ public:
     void                         configBrimWidth(double m)      {m_config.brim_width.value = m; }
     ConstLayerPtrsAdaptor        layers() const         { return ConstLayerPtrsAdaptor(&m_layers); }
     ConstSupportLayerPtrsAdaptor support_layers() const { return ConstSupportLayerPtrsAdaptor(&m_support_layers); }
+    // Brim is generated before support path simplification on a fresh print.
+    const ExtrusionEntityCollection& first_layer_support_for_auxiliary() const;
     const Transform3d&           trafo() const          { return m_trafo; }
     // Trafo with the center_offset() applied after the transformation, to center the object in XY before slicing.
     Transform3d                  trafo_centered() const
@@ -557,6 +559,7 @@ private:
     SlicingParameters                       m_slicing_params;
     LayerPtrs                               m_layers;
     SupportLayerPtrs                        m_support_layers;
+    std::unique_ptr<ExtrusionEntityCollection> m_first_layer_support_before_simplification;
     // BBS
     std::shared_ptr<TreeSupportData>        m_tree_support_preview_cache;
 

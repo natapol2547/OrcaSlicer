@@ -952,6 +952,11 @@ void PrintObject::simplify_extrusion_path()
     }
 
     if (this->set_started(posSimplifySupportPath)) {
+        // Auxiliary regeneration must see the same support footprint as the
+        // first process(), even after paths have been simplified for export.
+        if (!m_support_layers.empty() && !m_first_layer_support_before_simplification)
+            m_first_layer_support_before_simplification =
+                std::make_unique<ExtrusionEntityCollection>(m_support_layers.front()->support_fills);
         m_print->set_status(75, L("Optimizing toolpath"));
         BOOST_LOG_TRIVIAL(debug) << "Simplify extrusion path of support in parallel - start";
         tbb::parallel_for(
@@ -1046,8 +1051,19 @@ SupportLayer* PrintObject::get_support_layer_at_printz(coordf_t print_z, coordf_
     return const_cast<SupportLayer*>(std::as_const(*this).get_support_layer_at_printz(print_z, epsilon));
 }
 
+const ExtrusionEntityCollection& PrintObject::first_layer_support_for_auxiliary() const
+{
+    if (m_shared_object)
+        return m_shared_object->first_layer_support_for_auxiliary();
+    if (m_first_layer_support_before_simplification)
+        return *m_first_layer_support_before_simplification;
+    assert(!m_support_layers.empty());
+    return m_support_layers.front()->support_fills;
+}
+
 void PrintObject::clear_support_layers()
 {
+    m_first_layer_support_before_simplification.reset();
     if (!m_shared_object) {
         for (SupportLayer* l : m_support_layers)
             delete l;

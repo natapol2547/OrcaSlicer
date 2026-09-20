@@ -3001,7 +3001,7 @@ Polygons Print::first_layer_islands() const
             object_islands.push_back(expoly.contour);
         if (!object->support_layers().empty()) {
             if (object->support_layers().front()->support_type==stInnerNormal)
-                object->support_layers().front()->support_fills.polygons_covered_by_spacing(object_islands, float(SCALED_EPSILON));
+                object->first_layer_support_for_auxiliary().polygons_covered_by_spacing(object_islands, float(SCALED_EPSILON));
             else if(object->support_layers().front()->support_type==stInnerTree) {
                 ExPolygons &expolys_first_layer = object->m_support_layers.front()->lslices;
                 for (ExPolygon &expoly : expolys_first_layer) { object_islands.push_back(expoly.contour); }

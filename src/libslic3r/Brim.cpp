@@ -590,7 +590,7 @@ static ExPolygons outer_inner_brim_area(const Print& print,
             }
             if (support_material_extruder == extruderNo && brimToWrite.at(object->id()).sup) {
                 if (!object->support_layers().empty() && object->support_layers().front()->support_type==stInnerNormal) {
-                    for (const Polygon& support_contour : object->support_layers().front()->support_fills.polygons_covered_by_spacing()) {
+                    for (const Polygon& support_contour : object->first_layer_support_for_auxiliary().polygons_covered_by_spacing()) {
                         // Brim will not be generated for supports
                         /*
                         if (has_outer_brim) {
@@ -917,7 +917,7 @@ void make_brim(const Print& print, PrintTryCancel try_cancel, Polygons& islands_
                 bbx.merge(get_extents(ex_poly_translated.contour));
             }
         if (!object->support_layers().empty())
-        for (const Polygon& support_contour : object->support_layers().front()->support_fills.polygons_covered_by_spacing())
+        for (const Polygon& support_contour : object->first_layer_support_for_auxiliary().polygons_covered_by_spacing())
             for (const PrintInstance& instance : object->instances()) {
                 auto ex_poly_translated = support_contour;
                 ex_poly_translated.translate(instance.shift_without_plate_offset());
