@@ -6232,6 +6232,39 @@ int CLI::run(int argc, char **argv)
                                     }
                                     if (const char* config_dump = ::getenv("MS_NATIVE_CONFIG_DUMP"))
                                         print_fff->full_print_config().save(config_dump);
+                                    // Placement is native input too. This research protocol supports
+                                    // one unpainted STL object; refuse other topologies explicitly.
+                                    auto native_model_state = [&]() {
+                                        const Model& state = print_fff->model();
+                                        if (state.objects.size() != 1 || state.objects[0]->volumes.size() != 1 || state.objects[0]->instances.size() != 1)
+                                            throw Slic3r::RuntimeError("Native placement probe requires one object, volume and instance");
+                                        const auto* object = state.objects[0];
+                                        json result;
+                                        auto matrix = [](const Geometry::Transformation& transformation) {
+                                            json values = json::array();
+                                            for (int row = 0; row < 4; ++row)
+                                                for (int col = 0; col < 4; ++col)
+                                                    values.push_back(transformation.get_matrix().matrix()(row, col));
+                                            return values;
+                                        };
+                                        result["volume_transform"] = matrix(object->volumes[0]->get_transformation());
+                                        result["instance_transform"] = matrix(object->instances[0]->get_transformation());
+                                        result["vertices"] = json::array();
+                                        result["triangles"] = json::array();
+                                        for (const auto& vertex : object->volumes[0]->mesh().its.vertices)
+                                            result["vertices"].push_back({vertex.x(), vertex.y(), vertex.z()});
+                                        for (const auto& triangle : object->volumes[0]->mesh().its.indices)
+                                            result["triangles"].push_back({triangle.x(), triangle.y(), triangle.z()});
+                                        const Vec3d origin = print_fff->get_plate_origin();
+                                        result["plate_origin"] = {origin.x(), origin.y(), origin.z()};
+                                        return result;
+                                    };
+                                    if (const char* model_dump = ::getenv("MS_NATIVE_MODEL_DUMP")) {
+                                        boost::nowide::ofstream output(model_dump);
+                                        output << native_model_state().dump();
+                                        if (!output)
+                                            throw Slic3r::RuntimeError("Cannot write native model state");
+                                    }
                                     if (const char* reapply_path = ::getenv("MS_NATIVE_REAPPLY_CONFIG")) {
                                         // Research A->B->A lifecycle probe. Native invalidation owns
                                         // stage reuse; never import serialized paths or mark them done.
@@ -6240,6 +6273,8 @@ int CLI::run(int argc, char **argv)
                                             throw Slic3r::RuntimeError("Native reapply probe requires single-filament statistics-only mode");
                                         const DynamicPrintConfig original_config = print_fff->full_print_config();
                                         const Model original_model(print_fff->model());
+                                        const char* model_path = ::getenv("MS_NATIVE_REAPPLY_MODEL");
+                                        const json original_state = model_path ? native_model_state() : json();
                                         for (int phase = 0; phase < 2; ++phase) {
                                             const auto begin = std::chrono::steady_clock::now();
                                             const std::clock_t cpu_begin = std::clock();
@@ -6257,7 +6292,53 @@ int CLI::run(int argc, char **argv)
                                                 return identity;
                                             };
                                             const json requested_settings = settings_identity(next_config);
-                                            print_fff->apply(original_model, std::move(next_config));
+                                            json requested_config;
+                                            if (model_path)
+                                                for (const auto& key : next_config.keys())
+                                                    requested_config[key] = next_config.opt_serialize(key);
+                                            Model next_model(original_model);
+                                            json requested_model;
+                                            if (model_path) {
+                                                requested_model = original_state;
+                                                if (phase == 0) {
+                                                    boost::nowide::ifstream input(model_path);
+                                                    input >> requested_model;
+                                                }
+                                                for (const char* key : {"vertices", "triangles"})
+                                                    if (requested_model.at(key) != original_state.at(key))
+                                                        throw Slic3r::RuntimeError("Native placement probe cannot transfer a different centered mesh");
+                                                auto transform = [&](const char* key) {
+                                                    const auto& values = requested_model.at(key);
+                                                    if (values.size() != 16)
+                                                        throw Slic3r::RuntimeError("Invalid native placement matrix");
+                                                    Transform3d matrix = Transform3d::Identity();
+                                                    for (int row = 0; row < 4; ++row)
+                                                        for (int col = 0; col < 4; ++col)
+                                                            matrix.matrix()(row, col) = values.at(row * 4 + col).get<double>();
+                                                    Geometry::Transformation result;
+                                                    result.set_matrix(matrix);
+                                                    return result;
+                                                };
+                                                next_model.objects[0]->volumes[0]->set_transformation(transform("volume_transform"));
+                                                next_model.objects[0]->instances[0]->set_transformation(transform("instance_transform"));
+                                                next_model.objects[0]->invalidate_bounding_box();
+                                                const auto& origin = requested_model.at("plate_origin");
+                                                print_fff->set_plate_origin(Vec3d(origin.at(0).get<double>(), origin.at(1).get<double>(), origin.at(2).get<double>()));
+                                            }
+                                            print_fff->apply(next_model, std::move(next_config));
+                                            if (model_path) {
+                                                for (auto item = requested_config.begin(); item != requested_config.end(); ++item)
+                                                    if (print_fff->full_print_config().opt_serialize(item.key()) != item.value().get<std::string>())
+                                                        throw Slic3r::RuntimeError("Native reapply changed requested config key: " + item.key());
+                                                if (native_model_state() != requested_model)
+                                                    throw Slic3r::RuntimeError("Native placement was not applied");
+                                                const std::string printer_model = print_fff->full_print_config().opt_string("printer_model");
+                                                print_fff->is_BBL_printer() = printer_model.compare(0, 9, "Bambu Lab") == 0;
+                                                StringObjectException reapply_warning;
+                                                const auto reapply_error = print_fff->validate(&reapply_warning);
+                                                if (!reapply_error.string.empty())
+                                                    throw Slic3r::RuntimeError("Native reapply validation: " + reapply_error.string);
+                                            }
                                             const json applied_settings = settings_identity(print_fff->full_print_config());
                                             if (applied_settings != requested_settings)
                                                 throw Slic3r::RuntimeError("Native reapply probe did not apply the requested settings");
@@ -6279,6 +6360,7 @@ int CLI::run(int argc, char **argv)
                                             observed["retained"] = std::move(retained);
                                             observed["requested_settings"] = requested_settings;
                                             observed["applied_settings"] = applied_settings;
+                                            observed["placement_verified"] = model_path != nullptr;
                                             observed["wall_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
                                             observed["cpu_s"] = double(std::clock() - cpu_begin) / CLOCKS_PER_SEC;
                                             boost::nowide::cout << "MS_NATIVE_REAPPLY=" << observed.dump() << std::endl;
