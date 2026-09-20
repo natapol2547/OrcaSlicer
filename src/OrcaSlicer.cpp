@@ -6393,12 +6393,17 @@ int CLI::run(int argc, char **argv)
                                                 {"support", print_fff->is_step_done(posSupportMaterial)},
                                                 {"ironing", print_fff->is_step_done(posIroning)}
                                             };
+                                            json auxiliary_regenerated = json::array();
                                             if (reuse_only) {
                                                 const json geometry_after = geometry_state();
                                                 json invalidated = json::array();
                                                 for (auto item = geometry_before.begin(); item != geometry_before.end(); ++item)
-                                                    if (item.value().get<bool>() && !geometry_after.at(item.key()).get<bool>())
-                                                        invalidated.push_back(item.key());
+                                                    if (item.value().get<bool>() && !geometry_after.at(item.key()).get<bool>()) {
+                                                        if (item.key().compare(0, 7, "object:") == 0)
+                                                            invalidated.push_back(item.key());
+                                                        else
+                                                            auxiliary_regenerated.push_back(item.key());
+                                                    }
                                                 if (!invalidated.empty())
                                                     return json {
                                                         {"restart_required", true}, {"reason", "geometry_invalidated"},
@@ -6413,6 +6418,8 @@ int CLI::run(int argc, char **argv)
                                                 throw Slic3r::RuntimeError("Native reapply probe produced an invalid movement path");
                                             json observed = native_statistics();
                                             observed["retained"] = std::move(retained);
+                                            if (reuse_only)
+                                                observed["auxiliary_regenerated"] = std::move(auxiliary_regenerated);
                                             observed["requested_settings"] = requested_settings;
                                             observed["applied_settings"] = applied_settings;
                                             observed["placement_verified"] = placement_path != nullptr;
