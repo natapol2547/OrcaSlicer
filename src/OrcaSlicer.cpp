@@ -6110,6 +6110,58 @@ int CLI::run(int argc, char **argv)
                                 continue;
                             try {
                                 std::string outfile_final;
+                                // Placement is native input too. This research protocol supports
+                                // one unpainted STL object; refuse other topologies explicitly.
+                                auto native_model_state = [&]() {
+                                    const Model& state = print_fff->model();
+                                    if (state.objects.size() != 1 || state.objects[0]->volumes.size() != 1 || state.objects[0]->instances.size() != 1)
+                                        throw Slic3r::RuntimeError("Native placement probe requires one object, volume and instance");
+                                    const auto* object = state.objects[0];
+                                    json result;
+                                    auto matrix = [](const Geometry::Transformation& transformation) {
+                                        json values = json::array();
+                                        for (int row = 0; row < 4; ++row)
+                                            for (int col = 0; col < 4; ++col)
+                                                values.push_back(transformation.get_matrix().matrix()(row, col));
+                                        return values;
+                                    };
+                                    result["volume_transform"] = matrix(object->volumes[0]->get_transformation());
+                                    result["instance_transform"] = matrix(object->instances[0]->get_transformation());
+                                    result["vertices"] = json::array();
+                                    result["triangles"] = json::array();
+                                    for (const auto& vertex : object->volumes[0]->mesh().its.vertices)
+                                        result["vertices"].push_back({vertex.x(), vertex.y(), vertex.z()});
+                                    for (const auto& triangle : object->volumes[0]->mesh().its.indices)
+                                        result["triangles"].push_back({triangle.x(), triangle.y(), triangle.z()});
+                                    const Vec3d origin = print_fff->get_plate_origin();
+                                    result["plate_origin"] = {origin.x(), origin.y(), origin.z()};
+                                    return result;
+                                };
+                                if (const char* prepare_only = ::getenv("MS_NATIVE_PREPARE_ONLY"); prepare_only && std::string(prepare_only) == "1") {
+                                    const char* config_dump = ::getenv("MS_NATIVE_CONFIG_DUMP");
+                                    const char* model_dump = ::getenv("MS_NATIVE_MODEL_DUMP");
+                                    if (!config_dump || !model_dump || filament_count != 1)
+                                        throw Slic3r::RuntimeError("Native preparation requires output paths and one filament");
+                                    json stages = {
+                                        {"slice", print_fff->is_step_done(posSlice)},
+                                        {"perimeters", print_fff->is_step_done(posPerimeters)},
+                                        {"infill", print_fff->is_step_done(posInfill)},
+                                        {"support", print_fff->is_step_done(posSupportMaterial)},
+                                        {"ironing", print_fff->is_step_done(posIroning)}
+                                    };
+                                    for (const auto& done : stages)
+                                        if (done.get<bool>())
+                                            throw Slic3r::RuntimeError("Native preparation unexpectedly contains sliced geometry");
+                                    print_fff->full_print_config().save(config_dump);
+                                    {
+                                        boost::nowide::ofstream output(model_dump);
+                                        output << native_model_state().dump();
+                                        if (!output)
+                                            throw Slic3r::RuntimeError("Cannot write prepared native model state");
+                                    }
+                                    boost::nowide::cout << "MS_NATIVE_PREPARED=" << stages.dump() << std::endl;
+                                    flush_and_exit(0);
+                                }
                                 BOOST_LOG_TRIVIAL(info) << "start Print::process for partplate "<<index+1 << std::endl;
 #if defined(__linux__) || defined(__LINUX__)
                                 BOOST_LOG_TRIVIAL(info) << "cli callback mgr started:  "<<g_cli_callback_mgr.m_started << std::endl;
@@ -6232,33 +6284,6 @@ int CLI::run(int argc, char **argv)
                                     }
                                     if (const char* config_dump = ::getenv("MS_NATIVE_CONFIG_DUMP"))
                                         print_fff->full_print_config().save(config_dump);
-                                    // Placement is native input too. This research protocol supports
-                                    // one unpainted STL object; refuse other topologies explicitly.
-                                    auto native_model_state = [&]() {
-                                        const Model& state = print_fff->model();
-                                        if (state.objects.size() != 1 || state.objects[0]->volumes.size() != 1 || state.objects[0]->instances.size() != 1)
-                                            throw Slic3r::RuntimeError("Native placement probe requires one object, volume and instance");
-                                        const auto* object = state.objects[0];
-                                        json result;
-                                        auto matrix = [](const Geometry::Transformation& transformation) {
-                                            json values = json::array();
-                                            for (int row = 0; row < 4; ++row)
-                                                for (int col = 0; col < 4; ++col)
-                                                    values.push_back(transformation.get_matrix().matrix()(row, col));
-                                            return values;
-                                        };
-                                        result["volume_transform"] = matrix(object->volumes[0]->get_transformation());
-                                        result["instance_transform"] = matrix(object->instances[0]->get_transformation());
-                                        result["vertices"] = json::array();
-                                        result["triangles"] = json::array();
-                                        for (const auto& vertex : object->volumes[0]->mesh().its.vertices)
-                                            result["vertices"].push_back({vertex.x(), vertex.y(), vertex.z()});
-                                        for (const auto& triangle : object->volumes[0]->mesh().its.indices)
-                                            result["triangles"].push_back({triangle.x(), triangle.y(), triangle.z()});
-                                        const Vec3d origin = print_fff->get_plate_origin();
-                                        result["plate_origin"] = {origin.x(), origin.y(), origin.z()};
-                                        return result;
-                                    };
                                     if (const char* model_dump = ::getenv("MS_NATIVE_MODEL_DUMP")) {
                                         boost::nowide::ofstream output(model_dump);
                                         output << native_model_state().dump();
