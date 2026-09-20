@@ -23,6 +23,8 @@
 #include <regex>
 #include <charconv>
 #include <string>
+#include <cstdlib>
+#include <string_view>
 #include <system_error>
 
 #if __has_include(<charconv>)
@@ -2493,7 +2495,6 @@ void GCodeProcessor::enable_stealth_time_estimator(bool enabled)
 
 void GCodeProcessor::reset()
 {
-    m_actual_speed_preview = true;
     m_units = EUnits::Millimeters;
     m_global_positioning_type = EPositioningType::Absolute;
     m_e_local_positioning_type = EPositioningType::Absolute;
@@ -5963,7 +5964,10 @@ void GCodeProcessor::calculate_time(GCodeProcessorResult& result, size_t keep_la
     // Statistics-only export needs native block timing and the original moves
     // for printable-area checks, but never renders actual-speed transitions.
     // No inserted vertices means the surviving block IDs already remain valid.
-    if (!m_actual_speed_preview)
+    // The startup-only export flag is deliberately private to the research
+    // path; stand-alone G-code viewing has no Print and retains its preview.
+    const char* statistics_only = std::getenv("MS_NATIVE_STATS_ONLY");
+    if (m_print != nullptr && statistics_only != nullptr && std::string_view(statistics_only) == "1")
         return;
 
     // insert actual speed moves into the move list

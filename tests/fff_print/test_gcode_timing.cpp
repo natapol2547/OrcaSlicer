@@ -3,6 +3,8 @@
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Print.hpp"
+#include <boost/nowide/cstdlib.hpp>
 
 #include "test_utils.hpp"
 
@@ -84,6 +86,21 @@ double filament_change_delay(const GCodeProcessorResult& r)
 
 TEST_CASE("Speed-preview insertion is optional without changing native quantities", "[GCodeTiming][NativeStatistics]")
 {
+    struct ScopedStatisticsMode {
+        std::optional<std::string> previous;
+        ScopedStatisticsMode() {
+            if (const char* value = boost::nowide::getenv("MS_NATIVE_STATS_ONLY"))
+                previous = value;
+            set("0");
+        }
+        void set(const char* value) { REQUIRE(boost::nowide::setenv("MS_NATIVE_STATS_ONLY", value, 1) == 0); }
+        ~ScopedStatisticsMode() {
+            if (previous)
+                boost::nowide::setenv("MS_NATIVE_STATS_ONLY", previous->c_str(), 1);
+            else
+                boost::nowide::unsetenv("MS_NATIVE_STATS_ONLY");
+        }
+    } statistics_mode;
     const auto flavor = GENERATE(gcfMarlinFirmware, gcfKlipper);
     auto config = make_config(10.0, 5.0, 0.0);
     config.gcode_flavor.value = flavor;
@@ -106,8 +123,11 @@ TEST_CASE("Speed-preview insertion is optional without changing native quantitie
     };
 
     GCodeProcessor preview, statistics;
-    statistics.enable_actual_speed_preview(false);
+    Print print;
+    preview.set_print(&print);
+    statistics.set_print(&print);
     process(preview);
+    statistics_mode.set("1");
     process(statistics);
     const auto& a = preview.get_result();
     const auto& b = statistics.get_result();
@@ -153,6 +173,11 @@ TEST_CASE("Speed-preview insertion is optional without changing native quantitie
         REQUIRE(a.gcode_check_result.error_code == b.gcode_check_result.error_code);
     }
 
+    GCodeProcessor standalone;
+    process(standalone);
+    REQUIRE(standalone.get_result().moves.size() == a.moves.size());
+
+    statistics_mode.set("0");
     statistics.reset();
     process(statistics);
     REQUIRE(statistics.get_result().moves.size() == a.moves.size());

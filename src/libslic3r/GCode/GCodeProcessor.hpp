@@ -846,7 +846,6 @@ class Print;
         float m_preheat_time;
         int m_preheat_steps;
         bool m_disable_m73;
-        bool m_actual_speed_preview {true};
 
         enum class EProducer
         {
@@ -895,8 +894,6 @@ class Print;
             return m_time_processor.machines[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Stealth)].enabled;
         }
         void enable_machine_envelope_processing(bool enabled) { m_time_processor.machine_envelope_processing_enabled = enabled; }
-        // Set before processing. Original motion vertices and native timing remain intact.
-        void enable_actual_speed_preview(bool enabled) { m_actual_speed_preview = enabled; }
         void reset();
 
         const GCodeProcessorResult& get_result() const { return m_result; }
@@ -1156,4 +1153,5 @@ class Print;
 } /* namespace Slic3r */
 
 #endif /* slic3r_GCodeProcessor_hpp_ */
+
 
