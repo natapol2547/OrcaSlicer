@@ -6189,15 +6189,19 @@ std::string GCode::extrude_perimeters(const Print &print, const std::vector<Obje
 std::string GCode::extrude_infill(const Print &print, const std::vector<ObjectByExtruder::Island::Region> &by_region, bool ironing)
 {
     std::string 		 gcode;
+    // Chaining reverses pointed-to entities. Keep those mutations local to
+    // this export, including paths removed from the ordering's pointer list.
+    ExtrusionEntityCollection owned_extrusions;
     ExtrusionEntitiesPtr extrusions;
     const char*          extrusion_name = ironing ? "ironing" : "infill";
     for (const ObjectByExtruder::Island::Region &region : by_region)
         if (! region.infills.empty()) {
-            extrusions.clear();
-            extrusions.reserve(region.infills.size());
+            owned_extrusions.clear();
+            owned_extrusions.entities.reserve(region.infills.size());
             for (ExtrusionEntity *ee : region.infills)
                 if ((ee->role() == erIroning) == ironing)
-                    extrusions.emplace_back(ee);
+                    owned_extrusions.append(*ee);
+            extrusions = owned_extrusions.entities;
             if (! extrusions.empty()) {
                 m_config.apply(print.get_print_region(&region - &by_region.front()).config());
                 chain_and_reorder_extrusion_entities(extrusions, m_last_pos.to_point());
