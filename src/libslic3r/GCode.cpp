@@ -23,6 +23,7 @@
 #include "Time.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
@@ -2038,6 +2039,15 @@ static bool native_statistics_only()
     return enabled;
 }
 
+static bool native_diagnostic_trace()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("MS_NATIVE_DIAGNOSTIC_TRACE");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    return native_statistics_only() && enabled;
+}
+
 void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
     PROFILE_CLEAR();
@@ -2101,7 +2111,14 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
 #else
     const char* null_device = "/dev/null";
 #endif
-    GCodeOutputStream file(boost::nowide::fopen(statistics_only ? null_device : path_tmp.c_str(), "wb"), m_processor);
+    // Diagnostic-only raw commands, separate from ordinary statistics mode.
+    // The native processor receives precisely the same bytes in both modes.
+    static std::atomic<size_t> trace_sequence { 0 };
+    const std::string trace_path = native_diagnostic_trace() ?
+        std::string(path) + ".native-" + std::to_string(trace_sequence.fetch_add(1)) + ".gcode" : std::string();
+    const char* output_path = native_diagnostic_trace() ? trace_path.c_str() :
+        (statistics_only ? null_device : path_tmp.c_str());
+    GCodeOutputStream file(boost::nowide::fopen(output_path, "wb"), m_processor);
     if (! file.is_open()) {
         BOOST_LOG_TRIVIAL(error) << std::string("G-code export to ") + path + " failed.\nCannot open the file for writing.\n" << std::endl;
         if (!fs::exists(folder)) {
@@ -6279,7 +6296,7 @@ void GCode::GCodeOutputStream::write(const char *what)
     if (what != nullptr) {
         const char* gcode = what;
         // writes string to file
-        if (!native_statistics_only())
+        if (!native_statistics_only() || native_diagnostic_trace())
             fwrite(gcode, 1, ::strlen(gcode), this->f);
         //FIXME don't allocate a string, maybe process a batch of lines?
         m_processor.process_buffer(std::string(gcode));

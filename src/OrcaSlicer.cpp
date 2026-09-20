@@ -6282,6 +6282,10 @@ int CLI::run(int argc, char **argv)
                                             {"volume_mm3", stats.total_extruded_volume},
                                             {"length_mm", stats.total_used_filament},
                                             {"mass_g", stats.total_weight},
+                                            {"prepare_time_s", gcode_result->print_statistics.modes[
+                                                static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].prepare_time},
+                                            {"travel_distance_mm", gcode_result->print_statistics.total_travel_distance},
+                                            {"travel_moves", gcode_result->print_statistics.total_travel_moves},
                                             {"volumes_per_extruder", gcode_result->print_statistics.total_volumes_per_extruder}
                                         };
                                     };
