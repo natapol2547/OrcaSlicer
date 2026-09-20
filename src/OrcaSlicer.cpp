@@ -6269,6 +6269,8 @@ int CLI::run(int argc, char **argv)
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
                                     const char* worker_flag = ::getenv("MS_NATIVE_WORKER");
                                     const bool native_worker = worker_flag && std::string(worker_flag) == "1";
+                                    const char* reuse_flag = ::getenv("MS_NATIVE_REUSE_ONLY");
+                                    const bool reuse_only = native_worker && reuse_flag && std::string(reuse_flag) == "1";
                                     if (native_worker && (!gcode_result || gcode_result->gcode_check_result.error_code))
                                         throw Slic3r::RuntimeError("Native worker initial movement path is invalid");
                                     // Isolated research telemetry; normal CLI output is unchanged.
@@ -6311,6 +6313,15 @@ int CLI::run(int argc, char **argv)
                                                                  bool restore, bool require_changed) {
                                             const auto begin = std::chrono::steady_clock::now();
                                             const std::clock_t cpu_begin = std::clock();
+                                            auto geometry_state = [&]() {
+                                                json state = json::object();
+                                                for (int step = 0; step < int(posCount); ++step)
+                                                    state["object:" + std::to_string(step)] = print_fff->is_step_done(PrintObjectStep(step));
+                                                for (PrintStep step : {psWipeTower, psSkirtBrim})
+                                                    state["print:" + std::to_string(int(step))] = print_fff->is_step_done(step);
+                                                return state;
+                                            };
+                                            const json geometry_before = reuse_only ? geometry_state() : json();
                                             DynamicPrintConfig next_config = original_config;
                                             if (!restore) {
                                                 // ConfigBase::load deliberately ignores INI files.
@@ -6382,6 +6393,18 @@ int CLI::run(int argc, char **argv)
                                                 {"support", print_fff->is_step_done(posSupportMaterial)},
                                                 {"ironing", print_fff->is_step_done(posIroning)}
                                             };
+                                            if (reuse_only) {
+                                                const json geometry_after = geometry_state();
+                                                json invalidated = json::array();
+                                                for (auto item = geometry_before.begin(); item != geometry_before.end(); ++item)
+                                                    if (item.value().get<bool>() && !geometry_after.at(item.key()).get<bool>())
+                                                        invalidated.push_back(item.key());
+                                                if (!invalidated.empty())
+                                                    return json {
+                                                        {"restart_required", true}, {"reason", "geometry_invalidated"},
+                                                        {"invalidated", invalidated}, {"retained", retained}
+                                                    };
+                                            }
                                             Model::setExtruderParams(print_fff->full_print_config(), filament_count);
                                             Model::setPrintSpeedTable(print_fff->full_print_config(), print_fff->config());
                                             print_fff->process();
@@ -6398,7 +6421,7 @@ int CLI::run(int argc, char **argv)
                                             return observed;
                                         };
                                         if (native_worker) {
-                                            boost::nowide::cout << "MS_NATIVE_READY={\"protocol\":1}" << std::endl;
+                                            boost::nowide::cout << "MS_NATIVE_READY=" << json({{"protocol", reuse_only ? 2 : 1}}).dump() << std::endl;
                                             std::string line;
                                             while (std::getline(boost::nowide::cin, line)) {
                                                 if (line.size() > 65536)
@@ -6411,6 +6434,12 @@ int CLI::run(int argc, char **argv)
                                                     throw Slic3r::RuntimeError("Native worker request has an invalid identity or path");
                                                 json observed = apply_request(config.c_str(), placement.c_str(), false, false);
                                                 observed["id"] = id;
+                                                if (observed.value("restart_required", false)) {
+                                                    boost::nowide::cout << "MS_NATIVE_RESTART=" << observed.dump() << std::endl;
+                                                    // No target slicing/export has happened. Do not emit
+                                                    // the prior result or keep partially changed state alive.
+                                                    flush_and_exit(0);
+                                                }
                                                 boost::nowide::cout << "MS_NATIVE_RESULT=" << observed.dump() << std::endl;
                                             }
                                         } else {
