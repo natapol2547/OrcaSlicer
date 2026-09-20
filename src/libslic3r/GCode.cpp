@@ -6228,14 +6228,17 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
     std::string gcode;
     if (! support_fills.entities.empty()) {
 
-        ExtrusionEntitiesPtr extrusions;
-        extrusions.reserve(support_fills.entities.size());
+        // Chaining may reverse support entities. Keep that ordering local to
+        // this export so retained geometry is unchanged for the next target.
+        ExtrusionEntityCollection owned_extrusions;
+        owned_extrusions.entities.reserve(support_fills.entities.size());
         for (ExtrusionEntity* ee : support_fills.entities) {
             const auto role = ee->role();
             if ((role == support_extrusion_role) || (support_extrusion_role == erMixed && role != erIroning)) {
-                extrusions.emplace_back(ee);
+                owned_extrusions.append(*ee);
             }
         }
+        ExtrusionEntitiesPtr extrusions = owned_extrusions.entities;
         if (extrusions.empty())
             return gcode;
 
