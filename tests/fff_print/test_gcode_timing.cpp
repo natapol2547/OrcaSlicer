@@ -82,6 +82,78 @@ double filament_change_delay(const GCodeProcessorResult& r)
 
 } // namespace
 
+TEST_CASE("Speed-preview insertion is optional without changing native quantities", "[GCodeTiming][NativeStatistics]")
+{
+    const auto flavor = GENERATE(gcfMarlinFirmware, gcfKlipper);
+    auto config = make_config(10.0, 5.0, 0.0);
+    config.gcode_flavor.value = flavor;
+    GCodeProcessor::s_IsBBLPrinter = true;
+
+    auto process = [&](GCodeProcessor& processor) {
+        processor.apply_config(config);
+        processor.enable_stealth_time_estimator(true);
+        processor.initialize_result_moves();
+        processor.process_buffer("G90\nM83\nT0\n; FEATURE: Outer wall\nG1 X10 Y10 Z0.2 F600\nM204 S500\n");
+        // Exceed the planner queue repeatedly, including arcs and explicit flushes.
+        for (int i = 0; i < 200; ++i) {
+            processor.process_buffer("G1 X100 Y10 E2 F9000\nG3 X100 Y30 I0 J10 E1\n"
+                                     "G1 X10 Y30 E2 F1800\nG2 X10 Y10 I0 J-10 E1\n");
+            if (i % 30 == 0)
+                processor.process_buffer("G4 P125\nM204 S800\n");
+        }
+        processor.process_buffer("T1\nG1 X20 Y20 E1 F1800\nG4 S2\nT0\n");
+        processor.finalize(false);
+    };
+
+    GCodeProcessor preview, statistics;
+    statistics.enable_actual_speed_preview(false);
+    process(preview);
+    process(statistics);
+    const auto& a = preview.get_result();
+    const auto& b = statistics.get_result();
+    REQUIRE(a.moves.size() > b.moves.size());
+    REQUIRE(b.moves.size() > 800);
+    for (const auto mode : {PrintEstimatedStatistics::ETimeMode::Normal, PrintEstimatedStatistics::ETimeMode::Stealth}) {
+        REQUIRE(preview.get_time(mode) > 0.0f);
+        REQUIRE(preview.get_time(mode) == statistics.get_time(mode));
+        REQUIRE(preview.get_prepare_time(mode) == statistics.get_prepare_time(mode));
+        REQUIRE(preview.get_first_layer_time(mode) == statistics.get_first_layer_time(mode));
+    }
+    REQUIRE(!a.print_statistics.total_volumes_per_extruder.empty());
+    REQUIRE(a.print_statistics.total_volumes_per_extruder == b.print_statistics.total_volumes_per_extruder);
+    REQUIRE(a.print_statistics.total_travel_distance == b.print_statistics.total_travel_distance);
+    REQUIRE(a.print_statistics.total_travel_moves == b.print_statistics.total_travel_moves);
+    REQUIRE(filament_change_delay(a) == filament_change_delay(b));
+    size_t original_index = 0;
+    for (const auto& move : a.moves) {
+        if (move.internal_only)
+            continue;
+        REQUIRE(original_index < b.moves.size());
+        const auto& original = b.moves[original_index++];
+        REQUIRE_FALSE(original.internal_only);
+        REQUIRE(move.type == original.type);
+        REQUIRE(move.position == original.position);
+        REQUIRE(move.time == original.time);
+    }
+    REQUIRE(original_index == b.moves.size());
+
+    // Both a valid bed and a bed too small must retain identical decisions.
+    for (const double size : {200.0, 20.0}) {
+        const Pointfs bed {{0., 0.}, {size, 0.}, {size, size}, {0., size}};
+        auto check = [&](GCodeProcessor& processor) {
+            return processor.check_multi_extruder_gcode_valid(1, bed, 200., {}, {}, {}, {1, 1}, {});
+        };
+        REQUIRE(check(preview) == (size == 200.0));
+        REQUIRE(check(statistics) == (size == 200.0));
+        REQUIRE(a.gcode_check_result.error_code == b.gcode_check_result.error_code);
+    }
+
+    statistics.reset();
+    process(statistics);
+    REQUIRE(statistics.get_result().moves.size() == a.moves.size());
+    REQUIRE(statistics.get_time(PrintEstimatedStatistics::ETimeMode::Normal) == preview.get_time(PrintEstimatedStatistics::ETimeMode::Normal));
+}
+
 TEST_CASE("Filament-change time is attributed to tool-change moves, not extrusion roles", "[GCodeTiming]")
 {
     // Relative extrusion (M83) so every "E5" is a real 5mm extrusion move rather

@@ -2493,6 +2493,7 @@ void GCodeProcessor::enable_stealth_time_estimator(bool enabled)
 
 void GCodeProcessor::reset()
 {
+    m_actual_speed_preview = true;
     m_units = EUnits::Millimeters;
     m_global_positioning_type = EPositioningType::Absolute;
     m_e_local_positioning_type = EPositioningType::Absolute;
@@ -5958,6 +5959,12 @@ void GCodeProcessor::calculate_time(GCodeProcessorResult& result, size_t keep_la
         if (static_cast<PrintEstimatedStatistics::ETimeMode>(i) == PrintEstimatedStatistics::ETimeMode::Normal)
             actual_speed_moves = std::move(machine.actual_speed_moves);
     }
+
+    // Statistics-only export needs native block timing and the original moves
+    // for printable-area checks, but never renders actual-speed transitions.
+    // No inserted vertices means the surviving block IDs already remain valid.
+    if (!m_actual_speed_preview)
+        return;
 
     // insert actual speed moves into the move list
     unsigned int inserted_actual_speed_moves_count = 0;
