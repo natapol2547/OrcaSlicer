@@ -19,6 +19,8 @@
 #endif /* WIN32 */
 
 #include <cstdio>
+#include <chrono>
+#include <ctime>
 #include <string>
 #include <cstring>
 #include <iostream>
@@ -6214,9 +6216,9 @@ int CLI::run(int argc, char **argv)
                                     temp_time = (long long)Slic3r::Utils::get_current_time_utc();
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
                                     // Isolated research telemetry; normal CLI output is unchanged.
-                                    if (::getenv("MS_NATIVE_CACHE_STATS") && gcode_result) {
+                                    auto native_statistics = [&]() {
                                         const auto& stats = print_fff->print_statistics();
-                                        json native_stats = {
+                                        return json {
                                             {"time_s", gcode_result->print_statistics.modes[
                                                 static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time},
                                             {"volume_mm3", stats.total_extruded_volume},
@@ -6224,7 +6226,47 @@ int CLI::run(int argc, char **argv)
                                             {"mass_g", stats.total_weight},
                                             {"volumes_per_extruder", gcode_result->print_statistics.total_volumes_per_extruder}
                                         };
-                                        boost::nowide::cout << "MS_NATIVE_STATS=" << native_stats.dump() << std::endl;
+                                    };
+                                    if (::getenv("MS_NATIVE_CACHE_STATS") && gcode_result) {
+                                        boost::nowide::cout << "MS_NATIVE_STATS=" << native_statistics().dump() << std::endl;
+                                    }
+                                    if (const char* config_dump = ::getenv("MS_NATIVE_CONFIG_DUMP"))
+                                        print_fff->full_print_config().save(config_dump);
+                                    if (const char* reapply_path = ::getenv("MS_NATIVE_REAPPLY_CONFIG")) {
+                                        // Research A->B->A lifecycle probe. Native invalidation owns
+                                        // stage reuse; never import serialized paths or mark them done.
+                                        const char* stats_only = ::getenv("MS_NATIVE_STATS_ONLY");
+                                        if (!stats_only || std::string(stats_only) != "1" || !gcode_result || filament_count != 1)
+                                            throw Slic3r::RuntimeError("Native reapply probe requires single-filament statistics-only mode");
+                                        const DynamicPrintConfig original_config = print_fff->full_print_config();
+                                        const Model original_model(print_fff->model());
+                                        for (int phase = 0; phase < 2; ++phase) {
+                                            const auto begin = std::chrono::steady_clock::now();
+                                            const std::clock_t cpu_begin = std::clock();
+                                            DynamicPrintConfig next_config = original_config;
+                                            if (phase == 0)
+                                                next_config.load(reapply_path, ForwardCompatibilitySubstitutionRule::Disable);
+                                            print_fff->apply(original_model, std::move(next_config));
+                                            json retained = {
+                                                {"slice", print_fff->is_step_done(posSlice)},
+                                                {"perimeters", print_fff->is_step_done(posPerimeters)},
+                                                {"infill", print_fff->is_step_done(posInfill)},
+                                                {"support", print_fff->is_step_done(posSupportMaterial)},
+                                                {"ironing", print_fff->is_step_done(posIroning)}
+                                            };
+                                            Model::setExtruderParams(print_fff->full_print_config(), filament_count);
+                                            Model::setPrintSpeedTable(print_fff->full_print_config(), print_fff->config());
+                                            print_fff->process();
+                                            print_fff->export_gcode(outfile, gcode_result, nullptr);
+                                            if (gcode_result->gcode_check_result.error_code)
+                                                throw Slic3r::RuntimeError("Native reapply probe produced an invalid movement path");
+                                            json observed = native_statistics();
+                                            observed["phase"] = phase == 0 ? "target" : "return";
+                                            observed["retained"] = std::move(retained);
+                                            observed["wall_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+                                            observed["cpu_s"] = double(std::clock() - cpu_begin) / CLOCKS_PER_SEC;
+                                            boost::nowide::cout << "MS_NATIVE_REAPPLY=" << observed.dump() << std::endl;
+                                        }
                                     }
                                     time_using_cache = time_using_cache + ((long long)Slic3r::Utils::get_current_time_utc() - temp_time);
                                     BOOST_LOG_TRIVIAL(info) << "export_gcode finished: time_using_cache update to " << time_using_cache << " secs.";
