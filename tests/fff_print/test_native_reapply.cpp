@@ -61,10 +61,22 @@ TEST_CASE("MakerScapes recipe desktop import probe", "[.recipe_import]")
                     bundle.filaments.get_edited_preset().name != name("filament"))
                     throw std::runtime_error("Imported preset not selectable by its exact name");
                 bundle.filament_presets = {name("filament")};
-                DynamicPrintConfig resolved = bundle.full_config();
+                const bool prepare = item.value("prepare", false);
+                DynamicPrintConfig resolved = bundle.full_config(!prepare);
+                if (prepare) {
+                    Model model = Model::read_from_file(item.at("model").get<std::string>());
+                    Print print;
+                    print.apply(model, resolved);
+                    for (const auto step : {posSlice, posPerimeters, posInfill,
+                                           posSupportMaterial, posIroning})
+                        if (print.is_step_done(step))
+                            throw std::runtime_error("Preparation unexpectedly sliced geometry");
+                    resolved = print.full_print_config();
+                    report["prepared"] = true;
+                }
                 resolved.save((folder / "desktop-resolved.ini").string());
                 DynamicPrintConfig reference;
-                reference.load_from_ini((folder.parent_path() / "reference.ini").string(),
+                reference.load_from_ini(item.value("reference", (folder.parent_path() / "reference.ini").string()),
                                         ForwardCompatibilitySubstitutionRule::Disable);
                 std::set<std::string> keys;
                 for (const auto &key : reference.keys()) keys.insert(key);
@@ -75,6 +87,17 @@ TEST_CASE("MakerScapes recipe desktop import probe", "[.recipe_import]")
                     const json a = before ? json(before->serialize()) : json(nullptr);
                     const json b = after ? json(after->serialize()) : json(nullptr);
                     if (a != b) report["differences"][key] = {{"native", a}, {"desktop", b}};
+                }
+                if (prepare) {
+                    FullPrintConfig before, after;
+                    before.apply(reference, true);
+                    after.apply(resolved, true);
+                    report["physical_schema_differences"] = json::object();
+                    for (const auto &key : before.keys()) {
+                        const auto a = before.option(key)->serialize();
+                        const auto b = after.option(key)->serialize();
+                        if (a != b) report["physical_schema_differences"][key] = {{"native", a}, {"desktop", b}};
+                    }
                 }
                 report["imported"] = true;
             }
